@@ -1,0 +1,239 @@
+---
+title: "Med Ins prediction"
+author: "Christopher Nindyo"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+# clear-up the environment
+rm(list = ls())
+
+# chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  comment = "#>"
+)
+```
+```
+
+# Introduction
+
+A Medical Insurance Company Has Released Data For Almost 1000 Customers. Create A Model That Predicts The Yearly Medical Cover Cost. The Data Is Voluntarily Given By Customers. We ara going to use this dataset to build a model.
+
+We are going to make prediction from Medical Insurance. We want to know relationship between Premium Price with other variable. From that, we are going to predict Premium Price based on historical data. 
+
+# Data Preparation
+
+Load packages that we need
+
+```{r}
+library(tidyverse)
+library(caret)
+library(plotly)
+library(data.table)
+library(GGally)
+library(tidymodels)
+library(car)
+library(scales)
+library(lmtest)
+
+options(scipen = 100, max.print = 1e+06)
+```
+
+Read and check the dataset
+
+```{r}
+med_ins <- read.csv("Medicalpremium.csv")
+med_ins %>% head()
+```
+
+```{r}
+# Check Data Structure
+str(med_ins)
+```
+
+The data has 986 rows and 11 columns. Our target variable is `PremiumPrice`.
+We can see that the datatype still not right. For example Diabetes. It is a yes or no answer. So, we must change to factor. Let's change the data type so we can use it further.
+
+```{r}
+# Change data type
+med_ins <- med_ins %>% mutate(
+  Diabetes = as.factor(Diabetes),
+  BloodPressureProblems = as.factor(BloodPressureProblems),
+  AnyTransplants = as.factor(AnyTransplants),
+  AnyChronicDiseases = as.factor(AnyChronicDiseases),
+  KnownAllergies = as.factor(KnownAllergies),
+  HistoryOfCancerInFamily = as.factor(HistoryOfCancerInFamily),
+)
+
+str(med_ins)
+```
+
+# Exploratory Data Analysis
+
+Before we try to make model, we check all data variable. We see if any corellation between them.
+
+```{r}
+ggcorr(med_ins, label = TRUE, label_size = 2.9, hjust = 1, layout.exp = 2)
+```
+
+We can see that only `Age` has strong correlation to `PremiumPrice`
+
+# Modeling
+
+## Holdout Data
+To avoid any chance of overfitting, we are going to hold out some data from data set, that we are going to use for test. We will use 70% of the data as the training and 30% for testing data.
+
+```{r}
+set.seed(70)
+samplesize <- round(0.7 * nrow(med_ins), 0)
+index <- sample(seq_len(nrow(med_ins)), size = samplesize)
+
+data_train <- med_ins[index, ]
+data_test <- med_ins[-index, ]
+```
+
+## Linear Regression
+
+We are going to make model with all varible. Then see how the model works.
+
+```{r}
+set.seed(70)
+med_lm <- lm(PremiumPrice ~ ., data = data_train)
+
+summary(med_lm)
+
+```
+
+With all predictor, we get Adjusted R-squared:  0.629. It's already good. But it can be improved. Let's try with stepwise regression. First, we try forward selection.
+
+```{r}
+# stepwise regression: forward selection
+model_med_none <- lm(PremiumPrice ~ 1, data = med_ins)
+
+model_forward <- stats::step(object = model_med_none,
+                      direction = "forward",
+                      scope = list(upper= med_lm),
+                      trace=F)
+
+summary(model_forward)
+```
+
+Second, we try backward selection.
+
+```{r}
+# stepwise regression: backward elimination
+model_backward <- stats::step(object = med_lm,  
+                       direction = "backward", 
+                       trace = F) 
+
+summary(model_backward)
+```
+
+Finally, we try both selection.
+
+```{r}
+model_both <- stats::step(object = model_med_none,
+                      direction = "both",
+                      scope = list(upper= med_lm),trace=F)
+summary(model_both)
+```
+
+We can see that model forward and model both has the same adjusted R-Squared with highest value among others. So we choose one of them. I choose model forward.
+
+# Evaluation
+
+We are going to evaluate our model performance with RMSE (Root Mean Squared Error). The less RMSE is the better.
+
+```{r}
+lm_pred <- predict(model_forward, newdata = data_test %>% select(-PremiumPrice))
+
+# RMSE of train dataset
+RMSE(pred = model_forward$fitted.values, obs =  data_train$PremiumPrice)
+```
+
+```{r}
+# RMSE of test dataset
+RMSE(pred = lm_pred, obs = data_test$PremiumPrice)
+```
+
+The difference between train and test are too much. Let's try Model Backward.
+
+```{r}
+lm_pred2 <- predict(model_backward, newdata = data_test %>% select(-PremiumPrice))
+
+# RMSE of train dataset
+RMSE(pred = model_backward$fitted.values, obs =  data_train$PremiumPrice)
+```
+
+```{r}
+# RMSE of test dataset
+RMSE(pred = lm_pred2, obs = data_test$PremiumPrice)
+```
+
+The result is better. We use model backward.
+
+# Assumption
+
+## Linearity
+
+```{r}
+resact <- data.frame(residual = model_backward$residuals, fitted = model_backward$fitted.values)
+
+resact %>% ggplot(aes(fitted, residual)) + geom_point() + geom_hline(aes(yintercept = 0)) + 
+    geom_smooth() + theme(panel.grid = element_blank(), panel.background = element_blank())
+```
+
+It's not good because the error has pattern.
+
+## Normality Test
+
+```{r}
+shapiro.test(model_backward$residuals)
+```
+
+with p-value < 0,05, our residual is not normally distributed
+
+## Autocorrelation
+```{r}
+set.seed(1)
+durbinWatsonTest(model_backward)
+```
+
+With p-value > 0.05, we can conclude that autocorrelation is not present.
+
+## Heterocedasticity
+```{r}
+bptest(model_backward)
+```
+```{r}
+resact %>% ggplot(aes(fitted, residual)) + geom_point() + geom_hline(aes(yintercept = 0)) + 
+    theme(panel.grid = element_blank(), panel.background = element_blank())
+```
+
+With p-value < 0.05, we can conclude that heterocesdasticity is present.
+
+## Multicollinearity
+
+```{r}
+vif(model_backward)
+```
+There is no variable that over 10. So, there is no Multicollinearity.
+
+# Conclusion
+
+We can see that this model is not good enough to predict Premium Price. My opinion is we can invest more to get more data or obsevartion. So we can build a better model. This model has error pattern, we can get the conclusion that our model didn't work good enough for prediciton beacuse some data is not represented in our model.
+
+
